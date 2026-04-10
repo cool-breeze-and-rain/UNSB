@@ -9,6 +9,7 @@ from util.visualizer import Visualizer
 if __name__ == '__main__':
     opt = TrainOptions().parse()   # get training options
     dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
+
     dataset2 = create_dataset(opt)
     dataset_size = len(dataset)    # get the number of images in the dataset.
 

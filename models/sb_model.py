@@ -1,5 +1,7 @@
 import numpy as np
+import os
 import torch
+import torch.nn.functional as F
 from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
@@ -69,6 +71,11 @@ class SBModel(BaseModel):
         else:  # during test time, only load G
             self.model_names = ['G']
 
+        self.prompt_model = None
+        self.prompt_tokenizer = None
+        self.prompt_embedding = None
+        self.prompt_text = getattr(opt, 'prompt_text', '')
+
         # define networks (both generator and discriminator)
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, opt.no_antialias_up, self.gpu_ids, opt)
         self.netF = networks.define_F(opt.input_nc, opt.netF, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
@@ -91,6 +98,62 @@ class SBModel(BaseModel):
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
             self.optimizers.append(self.optimizer_E)
+
+    def _init_prompt_encoder(self):
+        if self.prompt_model is not None or not self.prompt_text:
+            return
+        if not self.opt.use_prompt_condition:
+            return
+        if not self.opt.conch_checkpoint_path:
+            raise ValueError("CONCH checkpoint path is empty.")
+        if not os.path.isfile(self.opt.conch_checkpoint_path):
+            raise FileNotFoundError(f"CONCH checkpoint not found: {self.opt.conch_checkpoint_path}")
+        try:
+            from conch.open_clip_custom import create_model_from_pretrained, get_tokenizer, tokenize
+        except ImportError as error:
+            raise ImportError(
+                "CONCH is required for prompt conditioning. "
+                "Install it in the active environment or disable --use_prompt_condition."
+            ) from error
+
+        model, _ = create_model_from_pretrained(
+            self.opt.conch_model_name,
+            checkpoint_path=self.opt.conch_checkpoint_path
+        )
+        model = model.to(self.device)
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad = False
+        self.prompt_model = model
+
+        try:
+            self.prompt_tokenizer = get_tokenizer(self.opt.conch_model_name)
+        except Exception:
+            self.prompt_tokenizer = tokenize
+
+    def _get_prompt_embedding(self):
+        if not self.prompt_text or not self.opt.use_prompt_condition:
+            return None
+        self._init_prompt_encoder()
+        if self.prompt_embedding is None or self.prompt_embedding.device != self.device:
+            with torch.no_grad():
+                tokenized_prompts = self.prompt_tokenizer([self.prompt_text]).to(self.device)
+                text_embeddings = self.prompt_model.encode_text(tokenized_prompts)
+                text_embeddings = F.normalize(text_embeddings, dim=-1)
+                latent_dim = 4 * self.opt.ngf
+                if text_embeddings.shape[-1] != latent_dim:
+                    text_embeddings = F.adaptive_avg_pool1d(
+                        text_embeddings.unsqueeze(1), latent_dim
+                    ).squeeze(1)
+                self.prompt_embedding = text_embeddings[0]
+        return self.prompt_embedding
+
+    def _sample_latent(self, batch_size):
+        z = torch.randn(size=[batch_size, 4 * self.opt.ngf]).to(self.real_A.device)
+        prompt_embedding = self._get_prompt_embedding()
+        if prompt_embedding is not None:
+            z = z + self.opt.prompt_scale * prompt_embedding.unsqueeze(0).expand(batch_size, -1)
+        return z
             
     def data_dependent_initialize(self, data,data2):
         """
@@ -190,13 +253,13 @@ class SBModel(BaseModel):
                 Xt       = self.real_A if (t == 0) else (1-inter) * Xt + inter * Xt_1.detach() + (scale * tau).sqrt() * torch.randn_like(Xt).to(self.real_A.device)
                 time_idx = (t * torch.ones(size=[self.real_A.shape[0]]).to(self.real_A.device)).long()
                 time     = times[time_idx]
-                z        = torch.randn(size=[self.real_A.shape[0],4*self.opt.ngf]).to(self.real_A.device)
+                z        = self._sample_latent(self.real_A.shape[0])
                 Xt_1     = self.netG(Xt, time_idx, z)
                 
                 Xt2       = self.real_A2 if (t == 0) else (1-inter) * Xt2 + inter * Xt_12.detach() + (scale * tau).sqrt() * torch.randn_like(Xt2).to(self.real_A.device)
                 time_idx = (t * torch.ones(size=[self.real_A.shape[0]]).to(self.real_A.device)).long()
                 time     = times[time_idx]
-                z        = torch.randn(size=[self.real_A.shape[0],4*self.opt.ngf]).to(self.real_A.device)
+                z        = self._sample_latent(self.real_A.shape[0])
                 Xt_12    = self.netG(Xt2, time_idx, z)
                 
                 
@@ -204,7 +267,7 @@ class SBModel(BaseModel):
                     XtB = self.real_B if (t == 0) else (1-inter) * XtB + inter * Xt_1B.detach() + (scale * tau).sqrt() * torch.randn_like(XtB).to(self.real_A.device)
                     time_idx = (t * torch.ones(size=[self.real_A.shape[0]]).to(self.real_A.device)).long()
                     time     = times[time_idx]
-                    z        = torch.randn(size=[self.real_A.shape[0],4*self.opt.ngf]).to(self.real_A.device)
+                    z        = self._sample_latent(self.real_A.shape[0])
                     Xt_1B = self.netG(XtB, time_idx, z)
             if self.opt.nce_idt:
                 self.XtB = XtB.detach()
@@ -212,8 +275,8 @@ class SBModel(BaseModel):
             self.real_A_noisy2 = Xt2.detach()
                       
         
-        z_in    = torch.randn(size=[2*bs,4*self.opt.ngf]).to(self.real_A.device)
-        z_in2    = torch.randn(size=[bs,4*self.opt.ngf]).to(self.real_A.device)
+        z_in = self._sample_latent(2 * bs)
+        z_in2 = self._sample_latent(bs)
         """Run forward pass"""
         self.real = torch.cat((self.real_A, self.real_B), dim=0) if self.opt.nce_idt and self.opt.isTrain else self.real_A
         
@@ -258,7 +321,7 @@ class SBModel(BaseModel):
                     Xt       = self.real_A if (t == 0) else (1-inter) * Xt + inter * Xt_1.detach() + (scale * tau).sqrt() * torch.randn_like(Xt).to(self.real_A.device)
                     time_idx = (t * torch.ones(size=[self.real_A.shape[0]]).to(self.real_A.device)).long()
                     time     = times[time_idx]
-                    z        = torch.randn(size=[self.real_A.shape[0],4*self.opt.ngf]).to(self.real_A.device)
+                    z        = self._sample_latent(self.real_A.shape[0])
                     Xt_1     = self.netG(Xt, time_idx, z)
                     
                     setattr(self, "fake_"+str(t+1), Xt_1)
@@ -330,13 +393,13 @@ class SBModel(BaseModel):
 
     def calculate_NCE_loss(self, src, tgt):
         n_layers = len(self.nce_layers)
-        z    = torch.randn(size=[self.real_A.size(0),4*self.opt.ngf]).to(self.real_A.device)
+        z = self._sample_latent(self.real_A.size(0))
         feat_q = self.netG(tgt, self.time_idx*0, z, self.nce_layers, encode_only=True)
 
         if self.opt.flip_equivariance and self.flipped_for_equivariance:
             feat_q = [torch.flip(fq, [3]) for fq in feat_q]
         
-        feat_k = self.netG(src, self.time_idx*0,z,self.nce_layers, encode_only=True)
+        feat_k = self.netG(src, self.time_idx*0, z, self.nce_layers, encode_only=True)
         feat_k_pool, sample_ids = self.netF(feat_k, self.opt.num_patches, None)
         feat_q_pool, _ = self.netF(feat_q, self.opt.num_patches, sample_ids)
 

@@ -13,6 +13,7 @@ Thumbs.db
 .ruff_cache/
 
 checkpoints/
+checkpoint/
 results/
 runs/
 wandb/

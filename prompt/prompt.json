@@ -1,0 +1,3 @@
+{
+  "BCI": "Breast pathology image, H&E to HER2 IHC. Preserve tumor architecture, lesion boundary, and cell distribution. Emphasize membranous HER2 expression, staining intensity, staining completeness, and positive region distribution. H&E shows blue-purple nuclei and pink-red stroma. HER2 IHC typically shows brown membranous staining in positive tumor cells with blue or light blue nuclear counterstain, and a pale white stromal background."
+}

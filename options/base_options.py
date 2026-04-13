@@ -1,7 +1,6 @@
 import argparse
 import os
 from util import util
-from util import prompt_utils
 import torch
 import models
 import data
@@ -25,9 +24,9 @@ class BaseOptions():
         """Define the common options that are used in both training and test."""
         # basic parameters
         parser.add_argument('--dataroot', default='/home/ubuntu/zhonghaiqin/dataset/BCI1/TrainValAB', help='path to images (should have subfolders trainA, trainB, valA, valB, etc)')
-        parser.add_argument('--name', type=str, default='UNSB_test', help='name of the experiment. It decides where to store samples and models')
-        parser.add_argument('--easy_label', type=str, default='UNSB_test', help='Interpretable name')
-        parser.add_argument('--gpu_ids', type=str, default='1', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
+        parser.add_argument('--name', type=str, default='UNSB', help='name of the experiment. It decides where to store samples and models')
+        parser.add_argument('--easy_label', type=str, default='UNSB', help='Interpretable name')
+        parser.add_argument('--gpu_ids', type=str, default='4', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
         parser.add_argument('--checkpoints_dir', type=str, default='./checkpoints/BCI', help='models are saved here')
         # model parameters
         parser.add_argument('--model', type=str, default='sb', help='chooses which model to use.')
@@ -54,7 +53,7 @@ class BaseOptions():
         parser.add_argument('--no_antialias', action='store_true', help='if specified, use stride=2 convs instead of antialiased-downsampling (sad)')
         parser.add_argument('--no_antialias_up', action='store_true', help='if specified, use [upconv(learned filter)] instead of [upconv(hard-coded [1,3,3,1] filter), conv]')
         # dataset parameters
-        parser.add_argument('--dataset_mode', type=str, default='aligned', help='chooses how datasets are loaded. [unaligned | aligned | single | colorization]')
+        parser.add_argument('--dataset_mode', type=str, default='unaligned', help='chooses how datasets are loaded. [unaligned | aligned | single | colorization]')
         parser.add_argument('--direction', type=str, default='AtoB', help='AtoB or BtoA')
         parser.add_argument('--serial_batches', action='store_true', help='if true, takes images in order to make batches, otherwise takes them randomly')
         parser.add_argument('--num_threads', default=4, type=int, help='# threads for loading data')
@@ -71,14 +70,6 @@ class BaseOptions():
         parser.add_argument('--epoch', type=str, default='latest', help='which epoch to load? set to latest to use latest cached model')
         parser.add_argument('--verbose', action='store_true', help='if specified, print more debugging information')
         parser.add_argument('--suffix', default='', type=str, help='customized suffix: opt.name = opt.name + suffix: e.g., {model}_{netG}_size{load_size}')
-        parser.add_argument('--use_prompt_condition', type=util.str2bool, nargs='?', const=True, default=True,
-                            help='load prompt text from JSON and use it as a conditioning signal throughout generation')
-        parser.add_argument('--prompt_path', type=str, default='./prompt/prompt.json',
-                            help='path to the JSON file that stores dataset prompt texts')
-        parser.add_argument('--prompt_key', type=str, default='',
-                            help='optional prompt key in prompt JSON; if empty, infer from dataroot')
-        parser.add_argument('--prompt_scale', type=float, default=1.0,
-                            help='strength of the prompt condition added to the generator latent input')
 
         # parameters related to StyleGAN2-based networks
         parser.add_argument('--stylegan2_G_num_downsampling',
@@ -163,13 +154,6 @@ class BaseOptions():
         if opt.suffix:
             suffix = ('_' + opt.suffix.format(**vars(opt))) if opt.suffix != '' else ''
             opt.name = opt.name + suffix
-
-        if opt.use_prompt_condition:
-            prompt_key, prompt_text = prompt_utils.resolve_prompt_condition(opt)
-        else:
-            prompt_key, prompt_text = '', ''
-        opt.prompt_key = prompt_key
-        opt.prompt_text = prompt_text
 
         self.print_options(opt)
 

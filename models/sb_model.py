@@ -4,7 +4,6 @@ from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
 import util.util as util
-from util import prompt_utils
 
 class SBModel(BaseModel):
     @staticmethod
@@ -52,8 +51,8 @@ class SBModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE', 'SB']
-        self.visual_names = ['real_A', 'real_A_noisy', 'fake_B', 'real_B']
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE','SB']
+        self.visual_names = ['real_A','real_A_noisy', 'fake_B', 'real_B']
         if self.opt.phase == 'test':
             self.visual_names = ['real']
             for NFE in range(self.opt.num_timesteps):
@@ -69,9 +68,6 @@ class SBModel(BaseModel):
             self.model_names = ['G', 'F', 'D','E']
         else:  # during test time, only load G
             self.model_names = ['G']
-
-        self.prompt_condition = None
-        self.prompt_text = getattr(opt, 'prompt_text', '')
 
         # define networks (both generator and discriminator)
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, opt.no_antialias_up, self.gpu_ids, opt)
@@ -95,25 +91,6 @@ class SBModel(BaseModel):
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
             self.optimizers.append(self.optimizer_E)
-
-    def _get_prompt_condition(self):
-        if not self.prompt_text:
-            return None
-        if self.prompt_condition is None or self.prompt_condition.device != self.device:
-            self.prompt_condition = prompt_utils.encode_prompt_text(
-                self.prompt_text,
-                4 * self.opt.ngf,
-                self.device,
-                dtype=torch.float32,
-            )
-        return self.prompt_condition
-
-    def _sample_latent(self, batch_size):
-        z = torch.randn(size=[batch_size, 4 * self.opt.ngf], device=self.device)
-        prompt_condition = self._get_prompt_condition()
-        if prompt_condition is not None:
-            z = z + self.opt.prompt_scale * prompt_condition.unsqueeze(0).expand(batch_size, -1)
-        return z
             
     def data_dependent_initialize(self, data,data2):
         """
@@ -213,13 +190,13 @@ class SBModel(BaseModel):
                 Xt       = self.real_A if (t == 0) else (1-inter) * Xt + inter * Xt_1.detach() + (scale * tau).sqrt() * torch.randn_like(Xt).to(self.real_A.device)
                 time_idx = (t * torch.ones(size=[self.real_A.shape[0]]).to(self.real_A.device)).long()
                 time     = times[time_idx]
-                z        = self._sample_latent(self.real_A.shape[0])
+                z        = torch.randn(size=[self.real_A.shape[0],4*self.opt.ngf]).to(self.real_A.device)
                 Xt_1     = self.netG(Xt, time_idx, z)
                 
                 Xt2       = self.real_A2 if (t == 0) else (1-inter) * Xt2 + inter * Xt_12.detach() + (scale * tau).sqrt() * torch.randn_like(Xt2).to(self.real_A.device)
                 time_idx = (t * torch.ones(size=[self.real_A.shape[0]]).to(self.real_A.device)).long()
                 time     = times[time_idx]
-                z        = self._sample_latent(self.real_A.shape[0])
+                z        = torch.randn(size=[self.real_A.shape[0],4*self.opt.ngf]).to(self.real_A.device)
                 Xt_12    = self.netG(Xt2, time_idx, z)
                 
                 
@@ -227,7 +204,7 @@ class SBModel(BaseModel):
                     XtB = self.real_B if (t == 0) else (1-inter) * XtB + inter * Xt_1B.detach() + (scale * tau).sqrt() * torch.randn_like(XtB).to(self.real_A.device)
                     time_idx = (t * torch.ones(size=[self.real_A.shape[0]]).to(self.real_A.device)).long()
                     time     = times[time_idx]
-                    z        = self._sample_latent(self.real_A.shape[0])
+                    z        = torch.randn(size=[self.real_A.shape[0],4*self.opt.ngf]).to(self.real_A.device)
                     Xt_1B = self.netG(XtB, time_idx, z)
             if self.opt.nce_idt:
                 self.XtB = XtB.detach()
@@ -235,8 +212,8 @@ class SBModel(BaseModel):
             self.real_A_noisy2 = Xt2.detach()
                       
         
-        z_in = self._sample_latent(2 * bs)
-        z_in2 = self._sample_latent(bs)
+        z_in    = torch.randn(size=[2*bs,4*self.opt.ngf]).to(self.real_A.device)
+        z_in2    = torch.randn(size=[bs,4*self.opt.ngf]).to(self.real_A.device)
         """Run forward pass"""
         self.real = torch.cat((self.real_A, self.real_B), dim=0) if self.opt.nce_idt and self.opt.isTrain else self.real_A
         
@@ -281,7 +258,7 @@ class SBModel(BaseModel):
                     Xt       = self.real_A if (t == 0) else (1-inter) * Xt + inter * Xt_1.detach() + (scale * tau).sqrt() * torch.randn_like(Xt).to(self.real_A.device)
                     time_idx = (t * torch.ones(size=[self.real_A.shape[0]]).to(self.real_A.device)).long()
                     time     = times[time_idx]
-                    z        = self._sample_latent(self.real_A.shape[0])
+                    z        = torch.randn(size=[self.real_A.shape[0],4*self.opt.ngf]).to(self.real_A.device)
                     Xt_1     = self.netG(Xt, time_idx, z)
                     
                     setattr(self, "fake_"+str(t+1), Xt_1)
@@ -353,13 +330,13 @@ class SBModel(BaseModel):
 
     def calculate_NCE_loss(self, src, tgt):
         n_layers = len(self.nce_layers)
-        z = self._sample_latent(self.real_A.size(0))
+        z    = torch.randn(size=[self.real_A.size(0),4*self.opt.ngf]).to(self.real_A.device)
         feat_q = self.netG(tgt, self.time_idx*0, z, self.nce_layers, encode_only=True)
 
         if self.opt.flip_equivariance and self.flipped_for_equivariance:
             feat_q = [torch.flip(fq, [3]) for fq in feat_q]
         
-        feat_k = self.netG(src, self.time_idx*0, z, self.nce_layers, encode_only=True)
+        feat_k = self.netG(src, self.time_idx*0,z,self.nce_layers, encode_only=True)
         feat_k_pool, sample_ids = self.netF(feat_k, self.opt.num_patches, None)
         feat_q_pool, _ = self.netF(feat_q, self.opt.num_patches, sample_ids)
 

@@ -41,7 +41,10 @@ subprocess.run([
     "--preprocess", "resize_and_crop",
     "--batch_size", "2",
     "--lambda_SB", "1.0",
-    "--lambda_NCE", "1.0"
+    "--lambda_NCE", "1.0",
+    "--prompt_path", "./prompt/prompt.json",
+    "--prompt_key", "BCI",
+    "--conch_checkpoint_path", "./checkpoint/conchv1_5/pytorch_model_vision.bin"
     # "--use_moe",
     # "--num_experts", "2",
     # "--top_k", "1",

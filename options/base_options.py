@@ -1,6 +1,7 @@
 import argparse
 import os
 from util import util
+from util import prompt_utils
 import torch
 import models
 import data
@@ -70,6 +71,18 @@ class BaseOptions():
         parser.add_argument('--epoch', type=str, default='latest', help='which epoch to load? set to latest to use latest cached model')
         parser.add_argument('--verbose', action='store_true', help='if specified, print more debugging information')
         parser.add_argument('--suffix', default='', type=str, help='customized suffix: opt.name = opt.name + suffix: e.g., {model}_{netG}_size{load_size}')
+        parser.add_argument('--use_prompt_condition', type=util.str2bool, nargs='?', const=True, default=True,
+                            help='use prompt text from JSON as a conditioning signal during virtual staining')
+        parser.add_argument('--prompt_path', type=str, default='./prompt/prompt.json',
+                            help='path to the prompt JSON file')
+        parser.add_argument('--prompt_key', type=str, default='',
+                            help='prompt key in JSON; if empty, infer it from dataroot')
+        parser.add_argument('--prompt_scale', type=float, default=1.0,
+                            help='weight used when injecting CONCH text features into the generator latent input')
+        parser.add_argument('--conch_model_name', type=str, default='conch_ViT-B-16',
+                            help='CONCH model name used by create_model_from_pretrained')
+        parser.add_argument('--conch_checkpoint_path', type=str, default='./checkpoint/conchv1_5/pytorch_model_vision.bin',
+                            help='path to the local CONCH checkpoint file')
 
         # parameters related to StyleGAN2-based networks
         parser.add_argument('--stylegan2_G_num_downsampling',
@@ -154,6 +167,13 @@ class BaseOptions():
         if opt.suffix:
             suffix = ('_' + opt.suffix.format(**vars(opt))) if opt.suffix != '' else ''
             opt.name = opt.name + suffix
+
+        if opt.use_prompt_condition:
+            prompt_key, prompt_text = prompt_utils.resolve_prompt_condition(opt)
+        else:
+            prompt_key, prompt_text = '', ''
+        opt.prompt_key = prompt_key
+        opt.prompt_text = prompt_text
 
         self.print_options(opt)
 

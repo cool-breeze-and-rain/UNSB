@@ -1,10 +1,49 @@
 import time
 import torch
+import json
+import os
 from options.train_options import TrainOptions
 from data import create_dataset
 from models import create_model
 from util.visualizer import Visualizer
+from conch.open_clip_custom import create_model_from_pretrained, get_tokenizer, tokenize
+import torch.nn.functional as F
 
+
+
+def load_prompt_text(opt):
+    prompt_path = opt.prompt_json_path
+    if not os.path.isabs(prompt_path):
+        prompt_path = os.path.join(os.getcwd(), prompt_path)
+
+    with open(prompt_path, 'r', encoding='utf-8') as f:
+        prompt_dict = json.load(f)
+
+    if opt.prompt_key not in prompt_dict:
+        raise KeyError(f"prompt key '{opt.prompt_key}' not found in {prompt_path}")
+
+    return prompt_dict[opt.prompt_key]
+
+def build_conch_text_encoder(opt, device):
+
+    model, _ = create_model_from_pretrained(
+        model_cfg='conch_ViT-B-16',
+        checkpoint_path=opt.conch_checkpoint_path
+    )
+    model = model.to(device).eval()
+    for p in model.parameters():
+        p.requires_grad = False
+
+    tokenizer = get_tokenizer()
+
+    return model, tokenizer
+
+def encode_prompt_feature(prompt_text, model, tokenizer, device):
+    with torch.no_grad():
+        tokens = tokenize(texts = [prompt_text], tokenizer=tokenizer).to(device)
+        text_feature = model.encode_text(tokens)
+        text_feature = F.normalize(text_feature, dim=-1)
+    return text_feature.detach() #.cpu()   # 存回 CPU，后面 set_input 再搬到模型 device
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()   # get training options
@@ -15,6 +54,13 @@ if __name__ == '__main__':
 
     model = create_model(opt)      # create a model given opt.model and other options
     print('The number of training images = %d' % dataset_size)
+
+    if opt.use_prompt_condition:
+        prompt_text = load_prompt_text(opt)
+        conch_model, conch_tokenizer = build_conch_text_encoder(opt, model.device)
+        base_text_feature = encode_prompt_feature(prompt_text, conch_model, conch_tokenizer, model.device)  # [1, D]
+    else:
+        base_text_feature = None
 
     visualizer = Visualizer(opt)   # create a visualizer that display/save images and plots
     opt.visualizer = visualizer
@@ -41,6 +87,12 @@ if __name__ == '__main__':
             if len(opt.gpu_ids) > 0:
                 torch.cuda.synchronize()
             optimize_start_time = time.time()
+            if opt.use_prompt_condition:
+                batch_size = data["A"].size(0)
+                data["text_feature"] = base_text_feature.expand(batch_size, -1).clone()
+                # data2["text_feature"] = base_text_feature.expand(batch_size, -1).clone()
+                data["prompt_key"] = opt.prompt_key
+                # data2["prompt_key"] = opt.prompt_key
             if epoch == opt.epoch_count and i == 0:
                 model.data_dependent_initialize(data,data2)
                 model.setup(opt)               # regular setup: load and print networks; create schedulers

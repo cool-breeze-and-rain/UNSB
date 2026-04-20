@@ -28,42 +28,42 @@ import subprocess
 #     # "--lambda_pathology", "0.01"
 # ])
 
-# subprocess.run([
-#     "python", "train.py",
-#     "--dataroot", "/home/ubuntu/zhonghaiqin/dataset/BCI1/TrainValAB",
-#     "--model", "sb",
-#     "--name", "UNSB_cropsize_512_loadsize_512",
-#     "--gpu_ids", "3",
-#     "--checkpoints_dir", "./checkpoints/BCI",
-#     "--display_env", "UNSB_cropsize_512_loadsize_512",
-#     "--crop_size", "512",
-#     "--load_size", "512",
-#     "--preprocess", "resize_and_crop",
-#     "--batch_size", "2",
-#     "--lambda_SB", "1.0",
-#     "--lambda_NCE", "1.0"
-#     # "--use_moe",
-#     # "--num_experts", "2",
-#     # "--top_k", "1",
-#     # "--lambda_orth", "50.0",
-#     # "--lambda_load", "50.0",
-#     # "--continue_train",
-#     # "--epoch_count", "11",
-#     # "--epoch", "10",
-#     # "--lambda_PSS", "50.0"
-#     # "--lambda_pathology", "1.0"
-# ])
+subprocess.run([
+    "python", "train.py",
+    "--dataroot", "/home/ubuntu/zhonghaiqin/dataset/BCI1/TrainValAB",
+    "--model", "pksb",
+    "--name", "PKSB_test",
+    "--gpu_ids", "3",
+    "--checkpoints_dir", "./checkpoints/BCI",
+    "--display_env", "PKSB_test",
+    "--crop_size", "256",
+    "--load_size", "256",
+    "--preprocess", "resize_and_crop",
+    "--batch_size", "8",
+    "--lambda_SB", "1.0",
+    "--lambda_NCE", "1.0",
+    # "--use_moe",
+    # "--num_experts", "2",
+    # "--top_k", "1",
+    # "--lambda_orth", "50.0",
+    # "--lambda_load", "50.0",
+    "--continue_train",
+    "--epoch_count", "301",
+    "--epoch", "300",
+    # "--lambda_PSS", "50.0"
+    # "--lambda_pathology", "1.0"
+])
 
 subprocess.run([
     "python", "test.py",
     "--dataroot", "/home/ubuntu/zhonghaiqin/dataset/BCI1/TrainValAB",
-    "--model", "sb",
-    "--name", "UNSB_BCI_cropsize_512_loadsize_512",
-    "--gpu_ids", "3",
+    "--model", "pksb",
+    "--name", "PKSB_test",
+    "--gpu_ids", "2",
     "--checkpoints_dir", "./checkpoints/BCI",
     "--results_dir", "./results_1",
-    "--crop_size", "512",
-    "--load_size", "512",
+    "--crop_size", "256",
+    "--load_size", "256",
     "--preprocess", "resize_and_crop",
     "--batch_size", "1",
     "--phase", "test",

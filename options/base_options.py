@@ -62,8 +62,6 @@ class BaseOptions():
                             help='path to CONCH checkpoint')
         parser.add_argument('--prompt_scale', type=float, default=1.0,
                             help='scale for text-conditioned latent injection')
-        parser.add_argument('--lambda_text_align', type=float, default=1.0,
-                            help='weight for text-image alignment loss')
         parser.add_argument('--text_feature_dim', type=int, default=512,
                             help='raw text feature dim output by text encoder')
         # dataset parameters

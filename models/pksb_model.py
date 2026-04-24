@@ -90,25 +90,29 @@ class PKSBModel(BaseModel):
             if cond_dim % num_heads != 0:
                 num_heads = 1
 
+            # sentence-level text token projection
             self.text_to_cond = nn.Sequential(
                 nn.Linear(opt.text_feature_dim, cond_dim),
                 nn.SiLU(),
                 nn.Linear(cond_dim, cond_dim),
             ).to(self.device)
 
-            self.image_to_cond = nn.Sequential(
+            # explicit image-token encoder for cross-attention
+            # keep spatial tokens instead of pooling to a single token
+            self.image_to_tokens = nn.Sequential(
                 nn.Conv2d(opt.input_nc, opt.ngf, kernel_size=3, stride=2, padding=1),
                 nn.SiLU(),
                 nn.Conv2d(opt.ngf, 2 * opt.ngf, kernel_size=3, stride=2, padding=1),
                 nn.SiLU(),
-                nn.AdaptiveAvgPool2d(1),
-                nn.Flatten(),
-                nn.Linear(2 * opt.ngf, cond_dim),
+                nn.Conv2d(2 * opt.ngf, cond_dim, kernel_size=3, stride=2, padding=1),
+                nn.SiLU(),
             ).to(self.device)
 
             self.query_norm = nn.LayerNorm(cond_dim).to(self.device)
             self.key_norm = nn.LayerNorm(cond_dim).to(self.device)
 
+            # query = image tokens, key/value = sentence-level text tokens
+            # this is explicit cross-attention
             self.text_image_attn = nn.MultiheadAttention(
                 embed_dim=cond_dim,
                 num_heads=num_heads,
@@ -117,10 +121,16 @@ class PKSBModel(BaseModel):
             ).to(self.device)
 
             self.cond_gate = nn.Sequential(
-                nn.Linear(cond_dim * 2, cond_dim),
+                nn.Linear(cond_dim * 3, cond_dim),
                 nn.SiLU(),
                 nn.Linear(cond_dim, cond_dim),
                 nn.Sigmoid(),
+            ).to(self.device)
+
+            self.cond_proj = nn.Sequential(
+                nn.Linear(cond_dim, cond_dim),
+                nn.SiLU(),
+                nn.Linear(cond_dim, cond_dim),
             ).to(self.device)
 
         if self.isTrain:
@@ -140,11 +150,12 @@ class PKSBModel(BaseModel):
 
             if opt.use_prompt_condition:
                 g_params += list(self.text_to_cond.parameters())
-                g_params += list(self.image_to_cond.parameters())
+                g_params += list(self.image_to_tokens.parameters())
                 g_params += list(self.query_norm.parameters())
                 g_params += list(self.key_norm.parameters())
                 g_params += list(self.text_image_attn.parameters())
                 g_params += list(self.cond_gate.parameters())
+                g_params += list(self.cond_proj.parameters())
 
             self.optimizer_G = torch.optim.Adam(
                 g_params,
@@ -254,10 +265,18 @@ class PKSBModel(BaseModel):
     def _expand_text_feature(self, text_feature, batch_size):
         if text_feature is None:
             return None
+
+        # support [D], [S, D], [B, S, D]
         if text_feature.dim() == 1:
+            text_feature = text_feature.unsqueeze(0).unsqueeze(0)
+        elif text_feature.dim() == 2:
             text_feature = text_feature.unsqueeze(0)
+        elif text_feature.dim() != 3:
+            raise ValueError(f'Unsupported text_feature dim: {text_feature.dim()}')
+
         if text_feature.size(0) == 1 and batch_size > 1:
-            text_feature = text_feature.expand(batch_size, -1)
+            text_feature = text_feature.expand(batch_size, -1, -1)
+
         return text_feature
 
     def _build_condition(self, cond_image, text_feature):
@@ -265,36 +284,55 @@ class PKSBModel(BaseModel):
             return None
 
         batch_size = cond_image.size(0) if cond_image is not None else text_feature.size(0)
-        text_feature = self._expand_text_feature(text_feature, batch_size).to(self.device)
+        text_feature = self._expand_text_feature(text_feature, batch_size).to(self.device)  # [B, S, D]
 
-        text_token = self.text_to_cond(text_feature).unsqueeze(1)  # [B, 1, C]
+        # sentence-level text tokens
+        text_tokens = self.text_to_cond(text_feature)  # [B, S, C]
+        text_tokens = self.key_norm(text_tokens)
 
         if cond_image is None:
-            return text_token.squeeze(1)
+            return self.cond_proj(text_tokens.mean(dim=1))
 
-        image_token = self.image_to_cond(cond_image.to(self.device)).unsqueeze(1)  # [B, 1, C]
+        # image patch tokens
+        image_feat = self.image_to_tokens(cond_image.to(self.device))  # [B, C, H, W]
+        image_tokens = image_feat.flatten(2).transpose(1, 2)          # [B, N, C]
+        image_tokens = self.query_norm(image_tokens)
 
-        query = self.query_norm(image_token)
-        key_value = self.key_norm(text_token)
-
+        # explicit cross-attention: image queries text
         attn_out, _ = self.text_image_attn(
-            query=query,
-            key=key_value,
-            value=key_value,
+            query=image_tokens,
+            key=text_tokens,
+            value=text_tokens,
             need_weights=False
-        )
+        )  # [B, N, C]
 
-        gate = self.cond_gate(torch.cat([image_token.squeeze(1), attn_out.squeeze(1)], dim=-1))
-        cond = text_token.squeeze(1) + gate * attn_out.squeeze(1)
+        image_summary = image_tokens.mean(dim=1)      # [B, C]
+        attn_summary = attn_out.mean(dim=1)           # [B, C]
+        text_summary = text_tokens.mean(dim=1)        # [B, C]
+
+        gate = self.cond_gate(torch.cat([image_summary, attn_summary, text_summary], dim=-1))
+        cond = text_summary + gate * attn_summary
+        cond = self.cond_proj(cond)
+        cond = F.normalize(cond, dim=-1)
         return cond
 
     def _sample_latent(self, batch_size, text_feature=None, cond_image=None):
-        z = torch.randn(size=[batch_size, 4 * self.opt.ngf], device=self.real_A.device)
+        noise_mode = getattr(self.opt, 'prompt_noise_mode', 'hybrid')
+        noise_alpha = getattr(self.opt, 'prompt_noise_alpha', 1.0)
+        noise_beta = getattr(self.opt, 'prompt_noise_beta', 1.0)
+
+        z_rand = torch.randn(size=[batch_size, 4 * self.opt.ngf], device=self.real_A.device)
         cond = self._build_condition(cond_image, text_feature)
 
-        if cond is not None:
-            cond = self._expand_text_feature(cond, batch_size).to(z.device)
-            z = z + self.opt.prompt_scale * cond
+        if cond is None:
+            return z_rand
+
+        if noise_mode == 'condition_only':
+            z = self.opt.prompt_scale * cond
+        elif noise_mode == 'random_only':
+            z = z_rand
+        else:
+            z = noise_alpha * z_rand + noise_beta * self.opt.prompt_scale * cond
 
         return z
 

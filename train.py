@@ -10,8 +10,7 @@ from conch.open_clip_custom import create_model_from_pretrained, get_tokenizer, 
 import torch.nn.functional as F
 
 
-
-def load_prompt_text(opt):
+def load_prompt_texts(opt):
     prompt_path = opt.prompt_json_path
     if not os.path.isabs(prompt_path):
         prompt_path = os.path.join(os.getcwd(), prompt_path)
@@ -22,7 +21,22 @@ def load_prompt_text(opt):
     if opt.prompt_key not in prompt_dict:
         raise KeyError(f"prompt key '{opt.prompt_key}' not found in {prompt_path}")
 
-    return prompt_dict[opt.prompt_key]
+    prompt_value = prompt_dict[opt.prompt_key]
+    if isinstance(prompt_value, str):
+        prompt_texts = [prompt_value.strip()]
+    elif isinstance(prompt_value, list):
+        prompt_texts = [str(item).strip() for item in prompt_value if str(item).strip()]
+    else:
+        raise TypeError(
+            f"prompt value for key '{opt.prompt_key}' must be a string or a list of strings, "
+            f"but got {type(prompt_value).__name__}"
+        )
+
+    if len(prompt_texts) == 0:
+        raise ValueError(f"prompt list for key '{opt.prompt_key}' is empty")
+
+    return prompt_texts
+
 
 def build_conch_text_encoder(opt, device):
 
@@ -38,12 +52,26 @@ def build_conch_text_encoder(opt, device):
 
     return model, tokenizer
 
-def encode_prompt_feature(prompt_text, model, tokenizer, device):
+
+def encode_prompt_feature(prompt_texts, model, tokenizer, device):
+    if isinstance(prompt_texts, str):
+        prompt_texts = [prompt_texts]
+
     with torch.no_grad():
-        tokens = tokenize(texts = [prompt_text], tokenizer=tokenizer).to(device)
+        tokens = tokenize(texts=prompt_texts, tokenizer=tokenizer).to(device)
         text_feature = model.encode_text(tokens)
         text_feature = F.normalize(text_feature, dim=-1)
-    return text_feature.detach() #.cpu()   # 存回 CPU，后面 set_input 再搬到模型 device
+    return text_feature.detach()  # [num_sentences, D]
+
+
+def attach_prompt_feature(batch, prompt_feature, prompt_key):
+    if prompt_feature is None:
+        return
+
+    batch_size = batch["A"].size(0)
+    batch["text_feature"] = prompt_feature.unsqueeze(0).expand(batch_size, -1, -1).clone()
+    batch["prompt_key"] = prompt_key
+
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()   # get training options
@@ -56,9 +84,9 @@ if __name__ == '__main__':
     print('The number of training images = %d' % dataset_size)
 
     if opt.use_prompt_condition:
-        prompt_text = load_prompt_text(opt)
+        prompt_texts = load_prompt_texts(opt)
         conch_model, conch_tokenizer = build_conch_text_encoder(opt, model.device)
-        base_text_feature = encode_prompt_feature(prompt_text, conch_model, conch_tokenizer, model.device)  # [1, D]
+        base_text_feature = encode_prompt_feature(prompt_texts, conch_model, conch_tokenizer, model.device)
     else:
         base_text_feature = None
 
@@ -88,11 +116,8 @@ if __name__ == '__main__':
                 torch.cuda.synchronize()
             optimize_start_time = time.time()
             if opt.use_prompt_condition:
-                batch_size = data["A"].size(0)
-                data["text_feature"] = base_text_feature.expand(batch_size, -1).clone()
-                # data2["text_feature"] = base_text_feature.expand(batch_size, -1).clone()
-                data["prompt_key"] = opt.prompt_key
-                # data2["prompt_key"] = opt.prompt_key
+                attach_prompt_feature(data, base_text_feature, opt.prompt_key)
+                attach_prompt_feature(data2, base_text_feature, opt.prompt_key)
             if epoch == opt.epoch_count and i == 0:
                 model.data_dependent_initialize(data,data2)
                 model.setup(opt)               # regular setup: load and print networks; create schedulers

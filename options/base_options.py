@@ -64,6 +64,13 @@ class BaseOptions():
                             help='scale for text-conditioned latent injection')
         parser.add_argument('--text_feature_dim', type=int, default=512,
                             help='raw text feature dim output by text encoder')
+        parser.add_argument('--prompt_noise_mode', type=str, default='hybrid',
+                            choices=['hybrid', 'condition_only', 'random_only'],
+                            help='how to form latent input when prompt condition is enabled')
+        parser.add_argument('--prompt_noise_alpha', type=float, default=1.0,
+                            help='weight for random noise when using hybrid prompt noise')
+        parser.add_argument('--prompt_noise_beta', type=float, default=1.0,
+                            help='weight for fused prompt-image condition when using hybrid prompt noise')
         # dataset parameters
         parser.add_argument('--dataset_mode', type=str, default='unaligned', help='chooses how datasets are loaded. [unaligned | aligned | single | colorization]')
         parser.add_argument('--direction', type=str, default='AtoB', help='AtoB or BtoA')

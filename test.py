@@ -27,12 +27,78 @@ See training and test tips at: https://github.com/junyanz/pytorch-CycleGAN-and-p
 See frequently asked questions at: https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/docs/qa.md
 """
 import os
+import json
+import torch
+import torch.nn.functional as F
 from options.test_options import TestOptions
 from data import create_dataset
 from models import create_model
 from util.visualizer import save_images
 from util import html
 import util.util as util
+from conch.open_clip_custom import create_model_from_pretrained, get_tokenizer, tokenize
+
+
+def load_prompt_texts(opt):
+    prompt_path = opt.prompt_json_path
+    if not os.path.isabs(prompt_path):
+        prompt_path = os.path.join(os.getcwd(), prompt_path)
+
+    with open(prompt_path, 'r', encoding='utf-8') as f:
+        prompt_dict = json.load(f)
+
+    if opt.prompt_key not in prompt_dict:
+        raise KeyError(f"prompt key '{opt.prompt_key}' not found in {prompt_path}")
+
+    prompt_value = prompt_dict[opt.prompt_key]
+    if isinstance(prompt_value, str):
+        prompt_texts = [prompt_value.strip()]
+    elif isinstance(prompt_value, list):
+        prompt_texts = [str(item).strip() for item in prompt_value if str(item).strip()]
+    else:
+        raise TypeError(
+            f"prompt value for key '{opt.prompt_key}' must be a string or a list of strings, "
+            f"but got {type(prompt_value).__name__}"
+        )
+
+    if len(prompt_texts) == 0:
+        raise ValueError(f"prompt list for key '{opt.prompt_key}' is empty")
+
+    return prompt_texts
+
+
+def build_conch_text_encoder(opt, device):
+    model, _ = create_model_from_pretrained(
+        model_cfg='conch_ViT-B-16',
+        checkpoint_path=opt.conch_checkpoint_path
+    )
+    model = model.to(device).eval()
+    for p in model.parameters():
+        p.requires_grad = False
+
+    tokenizer = get_tokenizer()
+    return model, tokenizer
+
+
+def encode_prompt_feature(prompt_texts, model, tokenizer, device):
+    if isinstance(prompt_texts, str):
+        prompt_texts = [prompt_texts]
+
+    with torch.no_grad():
+        tokens = tokenize(texts=prompt_texts, tokenizer=tokenizer).to(device)
+        text_feature = model.encode_text(tokens)
+        text_feature = F.normalize(text_feature, dim=-1)
+
+    return text_feature.detach()
+
+
+def attach_prompt_feature(batch, prompt_feature, prompt_key):
+    if prompt_feature is None:
+        return
+
+    batch_size = batch['A'].size(0)
+    batch['text_feature'] = prompt_feature.unsqueeze(0).expand(batch_size, -1, -1).clone()
+    batch['prompt_key'] = prompt_key
 
 
 if __name__ == '__main__':
@@ -47,12 +113,24 @@ if __name__ == '__main__':
     dataset2 = create_dataset(opt)
     train_dataset = create_dataset(util.copyconf(opt, phase="train"))
     model = create_model(opt)      # create a model given opt.model and other options
+
+    if opt.use_prompt_condition:
+        prompt_texts = load_prompt_texts(opt)
+        conch_model, conch_tokenizer = build_conch_text_encoder(opt, model.device)
+        base_text_feature = encode_prompt_feature(prompt_texts, conch_model, conch_tokenizer, model.device)
+    else:
+        base_text_feature = None
+
     # create a webpage for viewing the results
     web_dir = os.path.join(opt.results_dir, opt.name, '{}_{}'.format(opt.phase, opt.epoch))  # define the website directory
     print('creating web directory', web_dir)
     webpage = html.HTML(web_dir, 'Experiment = %s, Phase = %s, Epoch = %s' % (opt.name, opt.phase, opt.epoch))
 
     for i, (data,data2) in enumerate(zip(dataset,dataset2)):
+        if opt.use_prompt_condition:
+            attach_prompt_feature(data, base_text_feature, opt.prompt_key)
+            attach_prompt_feature(data2, base_text_feature, opt.prompt_key)
+
         if i == 0:
             model.data_dependent_initialize(data,data2)
             model.setup(opt)               # regular setup: load and print networks; create schedulers
